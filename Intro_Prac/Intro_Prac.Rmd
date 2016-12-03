@@ -1,0 +1,188 @@
+---
+title: 'Big Data Workshop: dplyr and San Fran Crime'
+author: "Miles McBain"
+date: "2 August 2016"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r set-global-options, include = FALSE}
+output <- knitr::opts_knit$get("rmarkdown.pandoc.to")
+
+if (output=="docx") {
+
+    knitr::opts_chunk$set(
+                   screenshot.force = TRUE,
+                   echo = TRUE,
+                   cache = TRUE)
+}
+
+library(webshot)
+```
+
+#Intro
+In this practical we're going to use geolocated data to motivate data analysis using the `dplyr` package. `dplyr` is the latest iteration of the [Split-Apply-Combine Strategy for Data Analysis](https://www.jstatsoft.org/article/view/v040i01) in R. While this strategy is not new, `dplyr` is an important innovation since it allows the strategy to be applied to big data through modular backends. With `dplyr` one can use the same code to prepare data in R dataframes, [SQL databases](https://cran.r-project.org/web/packages/dplyr/vignettes/databases.html), and [big data platforms (Spark)](http://spark.rstudio.com/dplyr.html). 
+ 
+
+##The data
+The data are around 30 000 crimes from the summer of 2014 in the city of San Francisco. While not inconveniently large, it is plain to see that this type of data that could become so, when collected over a longer time or a larger area. 
+
+This is public data that is not from a designed experiment. It needs a bit of work to do some analysis on.
+
+##Questions
+
+1. Can we identify the worst combinations of district, day, and time for crime? Where would you avoid?
+
+2. Can we show visually where crime hotspots are?
+
+#Learning Objectives
+The exercise aims to introduce you to R packages for shaping, summarising and presenting data.
+
+#Requirements
+To complete this exercise you will need a computer with R Studio installed and the following packages:
+
+* `dplyr`
+* `ggplot2`
+* `readr`
+* `leaflet`
+
+#Instructions
+
+**Note** The R code in this prac may look different to what you have seen before. If so, Great! You're going to learn something. Feel free to ask for an explanation of **ANYTHING** no matter how trivial it may seem in the practical session. *R for Data Science* by Hadley Wickham is a very useful resource for the concepts covered here. See [data transformation with dplyr](http://r4ds.had.co.nz/transform.html). 
+
+##Setting up
+
+1. Install any missing R packages in RStudio: `install.packages("dplyr",readr","leaflet","tidyr")`
+2. Change the and comment the `setwd()` command below to the folder where you downloaded the workshop datasets.
+3. Consider the discussion points in each question and if necessary, write R code to resolve them.
+
+```{r}
+#setwd("~/") #Will need to set this to the right path.
+```
+
+## Load Data
+Let's load the data and have a look at what we're dealing with:
+```{r}
+library(readr) 
+sanfran_data <- read_csv("./datasets/sanfrancisco_incidents_summer_2014.csv")
+
+head(sanfran_data)
+```
+
+# Question 1
+## Filtering
+The question is about crime, yet we noticed from previous Load Data step there are some `NON-CRIMINAL` records mixed in. We can filter those out using `dplyr::filter`.
+```{r, eval=TRUE, echo=TRUE, include=FALSE}
+library(dplyr)
+library(tidyr)
+```
+```{r}
+sanfran_data <- 
+  sanfran_data %>%
+  filter(Category != "NON-CRIMINAL")
+```
+* Look at the unique entries in `sanfran_data$Category`. Are there other values you might want to filter out?
+
+
+##Summarisation
+We want to see if there are significant times or locations that crime peaks. To do this our data needs to be summarised according to these variables. It looks as though we already have a district vaible: `pdDistrict` and a day variable: `DayOfWeek`.
+
+###Crimes by Day of Week and District
+Below `dplyr::group_by()` and `dplyr::summarise()` work in tandem to produce the crime summary by day of week and district. `summarise()` always needs to be called on a grouped data frame. Use `View(sanfran_data_day)` to see the complete output.
+```{r, eval=TRUE}
+sanfran_data_day <- 
+  sanfran_data %>%
+  group_by(PdDistrict, DayOfWeek) %>%
+  summarise(n_crimes = n())
+head(sanfran_data_day)
+```
+* What kind of data is this?
+* What does the function `n()` do?
+* **Expert:** Can you create a data frame that summarises the crimes by Hour of Day, Day of Week and District?
+    + Check out `dplyr::mutate()` for starters.
+
+##Exploratory Analysis
+To visualise the relationship between day, district and number of crimes a boxplot would be suitable, for example:
+```{r, eval=TRUE, echo=TRUE, include=FALSE}
+library(ggplot2)
+```
+```{r}
+ggplot(data = sanfran_data_day, aes(x=PdDistrict, y=n_crimes)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+* What does the relationship for day look like?
+* Try visualising the relationsip between both simultaneously using `geom_tile`. E.g. [like this](https://learnr.wordpress.com/2010/01/26/ggplot2-quick-heatmap-plotting/).
+
+##Linear Modelling
+The answer to Question 1 is probably clear by now. Depending on your audience it might be sufficent to tell the story with visuals alone. What if we need to determine if the effects are statistically significant? Linear models are a standard statistical tool for this. How can we apply them in a way that will work for big data?
+
+The `biglm` package in R allows one to fit linear models to big data in much the same way as the traditional `lm` or `glm`.
+
+What kind of model might you fit in this case to explain `n_crimes`? Is there extra information you might need? Where would you get it if so?
+
+Here's an example model fit:
+```{r}
+library(biglm)
+lin_model <- biglm(data = sanfran_data_day, formula = n_crimes ~ DayOfWeek + PdDistrict)
+summary(lin_model)
+```
+
+#Question 2
+Visualising spatial information on maps can be a powerful way to explore patterns. Historically these types of plots have been labourious to produce and required expensive tools. Luckily, there are many R packages that can facilitate this kind of plot. We will do an example using the R package `leaflet`.
+
+## Using Coordinates
+This San Fransisco Crime dataset has some coordinate variables, perfect for plotting on maps. There is the `Location` variable, which has helpfully been split out into `X` and `Y`. `X` is longitutde and `Y` is latitude. 
+
+* If you copy some `Location` data into Google maps does it confirm of interpretation of `X` and `Y`?
+
+##Plotting with leaflet
+
+This uses markers with low opacity to generate a heatmap, type plot:
+
+```{r}
+library(leaflet)
+
+sanfran_map <- 
+  leaflet(data = sanfran_data) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = sanfran_data$X, 
+                   lat = sanfran_data$Y,
+                   stroke = FALSE, 
+                   fillOpacity = 0.02
+                  )
+sanfran_map
+
+```
+
+
+While this map automatically creates clusters of incidents:
+
+```{r}
+sanfran_map_cluster <- 
+  leaflet(data = sanfran_data) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = sanfran_data$X, 
+                   lat = sanfran_data$Y,
+                   stroke = FALSE, 
+                   clusterOptions = markerClusterOptions()
+                  )
+sanfran_map_cluster
+```
+
+
+* Can you spot any outliers or concerning observations using this plot?
+* How would you address this?
+
+###Customisation
+`leaflet` is an R binding of a popular Javascript library by the same name. As such, it has many options for customisation. The [documentation](https://rstudio.github.io/leaflet/basemaps.html) is clear and full of examples. A few things you can try:
+
+* Choosing alternate map tiles
+* Creating a filter control for crime categories
+* Colouring crime categories
+* Adding crime details to the cluster plot.
+
