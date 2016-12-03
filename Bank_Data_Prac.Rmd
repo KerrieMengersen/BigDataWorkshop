@@ -1,0 +1,302 @@
+---
+title: 'Big Data Workshop: A Big Data CaseStudy with Banking Data'
+author: "Miles McBain"
+date: "2 December 2016"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r set-global-options, include = FALSE}
+
+```
+
+#Intro
+In this practical we're going to use a range of methods in a predictive modelling with big data scenario. We will use R to connect to h2o which is a big data statistics and machine learning platform built in Java.
+
+##Background
+The banking, insurance, and telecommunications industries frequently engage in a practice called 'below the line marketing'. That is, they try to upsell existing customers new products based on knowledge held about them. For example: Your bank may call you and try to sell you an income protection of life insurance product. This call is usually not random. It is likely based on a predictive model that has assigned you some kind of likelihood of accepting the deal.
+
+For large companies, calling all of their customers to make offers of new products is fincancially infeasible. They are also sensitive to customer fatigue in terms of making many offers that customers do not find attractive. Predictive models are used to make targetted campaigns that maximise the probability of a deal being made. The data that feed these models can be very big indeed. Consider the pitcure of you that could be formed by your timestamped and geotagged bank transaction records.
+
+##The Data
+The data for this analysis are real records from a telemarketing campaign run by a Spanish bank. The data contain the records for 32000 calls to banking customers. A bank may collect data like this from a 'pilot' campaign based on customers selected by stratified random sample. The data contain a 0/1 indicator variable which represents the failure/success of the customer accepting the proposed deal.
+
+##Questions
+
+1. What are the important variables in the data that relate to likelihood of success or failure?
+
+2. Can we identify groups or clusters of cusomters that have a higher likelihood of sucess or failure?
+
+3. Can we use some predictive modelling techniques to construct a useful model of success or failure?
+
+#Learning objectives
+The exercise will introduce you to a big data processing platform and some typical activities in the context of big data and predictive modelling.
+
+#Requirements
+To complete this exercise you will need a computer with R Studio installed and the following packages:
+
+* `dplyr`
+* `ggplot2`
+* `readr`
+* `h2o`
+
+
+#Instructions
+
+##Setting up
+
+1. Install any missing R packages in RStudio: `install.packages("dplyr",readr","ggplot2","h2o")`
+2. Esure the latest version of the Java runtime is installed: [http://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.html](http://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.html)
+2. Change the and comment the `setwd()` command below to the folder where you downloaded the workshop datasets.
+3. Consider the discussion points in each question and if necessary, write R code to resolve them.
+
+```{r}
+#setwd("~/") #Will need to set this to the right path.
+```
+
+## Load Data
+Let's load the data and see we're dealing with:
+
+```{r, echo=TRUE, message=FALSE}
+library(readr)
+library(dplyr)
+bank_data <- read_csv("./datasets/bank_customer_data.csv")
+```
+```{r}
+bank_data
+```
+
+The dataset contains a mix of customer demographic variables and financial indicies from the times the calls were made. The binary response varibale is `y`.
+
+A variable worh mentioning is `length`, the duration of the call in seconds. This information is not known about a call before it is made, so should not be used in later modelling.
+
+## Start H2O
+h2o is going to do the heavy lifting so you'll need to fire up a h2o instance if you have not already:
+```{r, echo=TRUE, message=FALSE}
+library(h2o)
+```
+
+```{r}
+h2o_inst <-h2o.init(ip = "127.0.0.1", port = 54321)
+```
+
+In practice, rather than on your local machine, the H2O instance could be running on a more powerful cluster of servers, which you connect to through the API provided in the `h2o` library.
+
+Next we need to push our data to the server. It's fastest to use h2o to read the csv file. This also ensures columns have types h2o can use.
+
+```{r}
+h2o_bank_data <- h2o.uploadFile(path = "./datasets/bank_customer_data.csv")
+```
+
+`h2o_bank_data` can be treated much like a regular R data frame, but operations on it are executed by the h2o instnace, often using paralell processing. 
+
+#Question 1
+There are many ways to determine varibale importance. Principle Component Analysis (PCA) can be used as a tool to see what variables or themes of variables are accounting for most of the variation in the data. We are going to explore the usage of PCA for this purpose here.
+
+First we remove the columns `y` and `length` from the data, since we're interested in the covariates:
+```{r}
+covs <- !grepl("^y$|^length$", names(h2o_bank_data)) #find the colums that are not 'y' or 'duration'
+h2o_bank_data_covs <- h2o_bank_data[, covs]
+```
+
+Next we run PCA on the data. To see the importnance of comparing variables on the same scale, you could rerun the analysis with `transform = "NONE"`.
+```{r, message=FALSE, results="hide"}
+pca_model <-h2o.prcomp(training_frame = h2o_bank_data_covs,
+                       k = ncol(h2o_bank_data_covs),
+                       transform = "STANDARDIZE")
+```
+```{r}
+summary(pca_model)  
+```
+
+It looks like 8 components explain most of the variation in the dataset.
+
+The rotation describes the direction of a unit vector along each principle component on the space defined by the original columns. Looking at the magnitudes of each variable in the rotation can give some insigt into the 'flavours' of the principle components and which variables are making the strongest contributions. Be sure to look at strong negative and postive contributions.
+
+```{r}
+View(pca_model@model$eigenvectors)
+```
+
+* Can you come up with some 'flavours' for the first two or three principle components?
+* Do they make intuitive sense in terms of things you would expect to be important to a customer accepting a deal?
+
+Finally to aid interpretation of the relationship we can plot the response over the first two PCs:
+```{r, results="hide"}
+library(ggplot2)
+pca_data <- as.data.frame(h2o.predict(object = pca_model,
+                        newdata = h2o_bank_data_covs))
+
+plot_data <- cbind(pca_data,
+                   as.data.frame(h2o_bank_data[,c("y")]))
+#as.data.frame() when called on a h2o data.frame will pull the data back into the R session. This is handy for plotting etc. But be careful not to do this with very large datasets without downsampling them first.
+```
+```{r}
+plot_data %>%
+ggplot(aes(x = PC1, y = PC2, colour=y)) +
+  geom_point(alpha = 0.7) +
+  ggtitle("Prinicple components of Bank Customer Data coloured by deal success")
+
+```
+
+* What is your interpretation of customers the bank should target in light of this plot?
+* Try plotting other combinations of PCs.
+
+##Question 2 
+In this question we consider a clustering approach. We try to find groupings of customers that are 'close' in terms of their representation in the data we have. A bank may call this task 'customer segmentation'.
+
+The algorithm used here is k-means. The main consideration in k-means clustering is how many clusters the algorithm should form. Clustering practicioners talk about this issue in terms of 'choosing k'. In reality common approaches are to keep k small and consider differences in the *within cluster sum of squares* as k increases.
+
+To do k-means clustering on big data using h2o:
+
+```{r, results="hide", message=FALSE, warning=FALSE}
+results = list()
+
+for(k in 2:12){
+  results[k] <- h2o.kmeans(training_frame =  h2o_bank_data_covs,
+                           k = k,
+                           standardize = TRUE,
+                           init = "Random"
+                           )
+}
+```
+
+```{r}
+sapply(2:12, function(x){results[[x]]@model$model_summary$within_cluster_sum_of_squares}) %>%
+  plot(2:12, .,
+       typ='o',
+       ylab = "Within Cluster SS",
+       xlab="k clusters")
+```
+
+Since k-means is a non-deterministic algorithm results may vary each time the algorithm is run. This can be mitigated by using crossvalidation at the cost of additonal run-time. It does look that the Within cluster SS reaches a local minimum around 4/5/6, which is a nice low number of clusters to consider. We will consider 5 as a good choice for example. Like PCA, we can interpret the 'flavour' of the clusters by looking at the cluster centres:
+
+```{r}
+results[[5]]@model$centers
+```
+
+What can be even more interesting is to combine the results of PCA and clustering and look at the labels of the clusters overlaid on the PCs:
+
+```{r, results="hide"}
+
+cluster_data <- as.data.frame(h2o.predict(object = results[[5]],
+                        newdata = h2o_bank_data_covs))
+
+clust_plot_data <- cbind(plot_data,
+                  cluster_data) %>% 
+  rename(cluster = predict) %>%
+  mutate(cluster = cluster + 1) #correcting so clusters match up with centroids above that start from 1.
+```
+
+```{r}
+clust_plot_data %>%
+ggplot(aes(x = PC1, y = PC2, colour=as.factor(cluster))) +
+  geom_point(alpha = 0.7) +
+  ggtitle("Prinicple components of Bank Customer Data coloured by cluster")
+
+```
+
+We know from the PCA plot lower half of the plot had a  greater proportion of deals made. Try making this plot with different combinations of PCAs and numbers of clusters.
+
+Summarising the proportion of deals made by cluster is also easy:
+```{r}
+clust_plot_data %>%
+  ggplot(aes(x = as.factor(cluster), fill = as.factor(y))) +
+  geom_bar(position = "fill") + 
+  ggtitle("Proportion of deal outcomes by cluster") +
+  ylab("Proportion of deals made") +
+  xlab("Cluster")
+```
+
+* How would you summarise the deomgraphic of customers mosty likely to accept the bank's marketing offer, based on the clustering approach?
+
+##Question 3
+As we discussed in the introduction, quantitative models are frequently used to assign customers a probability of accepting deals based on data like this. A typical choice is Logistic Regression because it has well known interpretations and scales well. Inceasingly though organisations are exploring machine learning methods like Gradient Boosted Trees, Random Forests and Deep Learning (Neural Networks) in applied settings.
+
+Platforms like `h2o` and `spark` have implmentations of these popular algorithms. Rather than go a longwinded demontration of these methods in R code, we will introduce the `h2o` GUI, 'H2O Flow' which can be used to experiment with these methods on big data.
+
+To access the GUI on your local machine navigate your webbrowser to `http:127.0.0.1:54321`. If it is not accessible, run:
+
+```{r, eval=FALSE}
+h2o_inst <-h2o.init(ip = "127.0.0.1", port = 54321)
+```
+
+
+### H2O Flow insructions 
+
+####Set up the Data Frame
+1.	*Import File* : 
+    -	From Data Select upload the file. 
+    - Select Choose File 
+    -	Navigate to chosen folder and select 'bank_customer_data.csv' ./data
+    -	Click Upload. This should automatically load Setup Parse block
+
+2.	*Parse Data* :
+    -	H20 Flow will automatically guess an appropriate data type for each column such as numeric or enum (enum, for enumerable, is the data type for categorical data). These can be manually changed if needed but in this case we will leave the default column types and parse configuration. 
+    -	Select Parse to parse this file with these settings. 
+    -	Once the Job is complete select View
+
+3.	*Split frame into Training and Validation sets*:
+    -From Actions Select Split
+    -Change the keys values to bank_validation for the 0.75 split and bank_training for the 0.25 split. 
+    -Select create. The data is now ready to be modelled
+
+####Set up the models
+
+#####Neural Network
+4.	*Create Neural Net Model*
+    - From Model select Deep learning
+    - Select training data to be bank_train and the validation data to be bank_validation
+    - Choose response_column to be 'y' (the final variable on the list)
+    - Observe that the main parameters of importance are 
+    - *activation* : The type of activation function used in the neural network
+    - *hidden* : The number of hidden nodes arranges in there columns
+    - *epoch* : The number of full iterations of the training data used for training
+    - For these main variables choose `activation = rectifier`, `hidden = 100`, 100 (this means 2 hidden layers of 100 nodes each), `epoch = 10`
+    - We wish to see how different variables impacted the overall results so tick the box next to variable importance
+    - At the end of the parameters list, the remainder of which we will leave to the default for now,  select Build Model
+
+Observe the extensive 'Advanced' and 'Expert' parameters available.  These are beyond the scope of this tutorial however they should give you a feeling for the complexity available in deep learning. In the H2O framework it is easy to experiment with these parameters and other data sets as an extension to this workshop. 
+
+5.	*Results*
+    -	Once the job is finished select the action view
+	The first two graphs are the ROC curve for the training data and Validation data effectively.  The area under the curve AUC is the main indicator of performance.
+    - The next graph shows the overall error for different epochs for both the training set and the validation set. We see the error has decreased from 1 to 10 epochs. 
+    -	From the "variable importance" bar graph we get an idea of which variables were most important to the overall result. Due to the weights being initialised randomly as well as inherent noise in the data this can only be taken as an indicator rather than an exact measure. Most likely the duration will appear near the top of this list. Why would this be such an important variable? Why should we exclude it from our model? 
+
+6.	*Ignoring Call Length*
+    -	Repeat the model fit. This can be done either by again choosing Deep learning from Model or by simply scrolling up and adjusting the previous model block. 
+    -	Leave all parameters the same except this time choose to ignore the `length` column by selecting the appropriate box under ignored_columns.
+    -	Observe the degraded performance on both the training and validation set. This can be seen in both the changed shape of the curve as well as the AUC value.  
+
+7.	*Overfitting* 
+    -	Repeat the model fit, leaving all parameters the same and still choosing to ignore the call duration, however now choose hidden = 100, epochs = 80. What do you expect to occur?
+    -	Observe in the scoring history graph that the validation score, in yellow, hits a minimum before beginning to climb again. This is a typical example of overfitting. By focusing the predictions too heavily on the training data the model does not generalise well to the validation data. 
+    -	Notice the final reported score of MSE for training and validation is a discontinuous jump. This occurs because H2o automatically selects the model which minimises the error on the validation set. This can be avoided by unchecking the box overwrite with best mode which is the first expert parameter. 
+
+#####Gradient Boosting Machine ( or Gradient Boosted Tree)
+We can compare the results of a neural Network trained on this data to a Gradient Boosted Tree model trained on this data. 
+
+8.	*Create Gradient Boosted Model*
+    -	From Models select Gradient Boosted Machine
+    - As before choose training data to be bank_train and the validation data to be bank_validation, choose the response variable to be y and ignore the duration column. 
+    -	 Note the following parameters of importance for a GBM
+    -	*Ntrees* : The number of trees created
+    -	*Max_depth* : Maximum depth of each tree
+    - *min_rows*:  The minimum number of observations allowed in a leaf node. 
+    - *Learn_rate*:  Add only a fraction of the value given by each new tree to the accumulative model. 
+    -	Leave these parameters to the default values and build the model.
+    -	How does this model compare to a neural network?
+
+9.	*Overfitting with Gradient Boosting Machines*
+GBM models can be regularised in a number of ways. This includes limiting the allowed depth of each tree created, ensuring leaf nodes don't become too localised by requiring a minimum number of observations in each leaf, and adding only a small fraction of each new tree to the accumulative model by using a small learning rate. 
+
+* Rebuild the GBM with:
+    -	Max_depth = 10
+    -	Min_rows = 4
+    -	Learn_rate = 0.5 
+    -	Observe the overfitting that occurs. AUC is now very near one for the training set, degraded for the validation set and the divergence should be illustrated in the scoring history. 
+
+
